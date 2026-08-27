@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: sih26-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+
+  zeek:
+    build:
+      context: .
+      dockerfile: zeek_scripts/Dockerfile
+    container_name: sih26-zeek
+    volumes:
+      - ./logs:/logs
+      - ./pcaps:/pcaps
+      - ./zeek_scripts:/zeek_scripts
+    working_dir: /logs
+    # Keep container alive if needed, or run manually via docker exec/run
+    command: tail -f /dev/null
+
+volumes:
+  redis_data:
