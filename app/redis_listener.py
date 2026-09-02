@@ -4,6 +4,8 @@ import hashlib
 
 import redis
 
+from app.correlation.features import compute_pair_features
+from app.correlation.weighting import calculate_edge_weight
 from app.main import parse_alert, process_alerts
 from app.schemas.alert import Alert
 from app.schemas.incident import Incident
@@ -13,12 +15,8 @@ class AlertStreamListener:
     """
     Reads alerts from Redis and maintains stable incident state.
 
-    The same correlated incident keeps the same incident_id across
-    successive batches. New related alerts are added to the existing
-    incident instead of creating a new incident ID.
-
-    LLM narrative generation is optional and never required for the
-    detection/correlation/risk pipeline.
+    Incidents can evolve across batches when newly arriving alerts
+    correlate with alerts already belonging to an existing incident.
     """
 
     def __init__(
@@ -27,6 +25,7 @@ class AlertStreamListener:
         port: int = 6379,
         db: int = 0,
         temporal_window: float = 300.0,
+        correlation_threshold: float = 0.5,
         generate_llm_narrative: bool = False,
         start_from_beginning: bool = False,
     ) -> None:
@@ -39,10 +38,6 @@ class AlertStreamListener:
 
         self.stream_name = "alerts:live"
 
-        # By default, start in live mode and only process new alerts.
-        #
-        # For replay/testing, explicitly use:
-        # start_from_beginning=True
         self.last_id = (
             "0-0"
             if start_from_beginning
@@ -50,22 +45,18 @@ class AlertStreamListener:
         )
 
         self.temporal_window = temporal_window
+        self.correlation_threshold = correlation_threshold
 
-        # LLM generation is optional.
-        self.generate_llm_narrative = generate_llm_narrative
+        self.generate_llm_narrative = (
+            generate_llm_narrative
+        )
 
-        # Alerts currently inside the rolling correlation window.
         self.recent_alerts: list[Alert] = []
 
-        # Stable incident state.
         self.incidents: dict[str, Incident] = {}
 
     def read_alerts(self, count: int = 100) -> list[str]:
-        """
-        Read alerts from the Redis alerts stream.
-
-        In live mode, the listener waits for new messages.
-        """
+        """Read alerts from the Redis alerts stream."""
 
         response = self.redis.xread(
             {self.stream_name: self.last_id},
@@ -91,12 +82,7 @@ class AlertStreamListener:
 
     @staticmethod
     def _alert_identity(alert: Alert) -> str:
-        """
-        Create a deterministic identity for an alert.
-
-        This prevents the same alert from being added repeatedly
-        to an incident.
-        """
+        """Create a deterministic identity for an alert."""
 
         identity = (
             f"{alert.timestamp}|"
@@ -111,13 +97,10 @@ class AlertStreamListener:
         ).hexdigest()
 
     @staticmethod
-    def _incident_identity(alerts: list[Alert]) -> str:
-        """
-        Create a deterministic identity for an incident.
-
-        The identity is based on the identities of the alerts
-        belonging to the incident.
-        """
+    def _incident_identity(
+        alerts: list[Alert],
+    ) -> str:
+        """Create a deterministic identity for an incident."""
 
         alert_ids = sorted(
             AlertStreamListener._alert_identity(alert)
@@ -130,6 +113,60 @@ class AlertStreamListener:
             identity.encode("utf-8")
         ).hexdigest()[:16]
 
+    def _alert_correlates_with_incident(
+        self,
+        alert: Alert,
+        incident: Incident,
+    ) -> bool:
+        """
+        Determine whether a new alert is sufficiently correlated
+        with an existing incident.
+
+        Uses the same temporal window, correlation features, and
+        weighted edge calculation as the correlation engine.
+        """
+
+        for existing_alert in incident.alerts:
+            features = compute_pair_features(
+                existing_alert,
+                alert,
+                temporal_window=self.temporal_window,
+            )
+
+            if features.time_delta > self.temporal_window:
+                continue
+
+            weight = calculate_edge_weight(features)
+
+            if weight >= self.correlation_threshold:
+                return True
+
+        return False
+
+    def _find_matching_incidents(
+        self,
+        new_incident: Incident,
+    ) -> list[str]:
+        """
+        Find existing incidents that correlate with the new
+        incident's alerts.
+        """
+
+        matching_ids: list[str] = []
+
+        for incident_id, existing_incident in (
+            self.incidents.items()
+        ):
+            for alert in new_incident.alerts:
+                if self._alert_correlates_with_incident(
+                    alert,
+                    existing_incident,
+                ):
+                    matching_ids.append(incident_id)
+                    break
+
+        return matching_ids
+
     def _merge_incidents(
         self,
         new_incidents: list[Incident],
@@ -137,39 +174,20 @@ class AlertStreamListener:
         """
         Merge newly correlated incidents into stable incident state.
 
-        If a newly correlated incident contains an alert that already
-        belongs to a known incident, preserve the existing incident ID.
-
-        Otherwise, create a new stable incident ID.
+        A new incident can extend an existing incident even when its
+        alerts are new, provided those alerts satisfy the correlation
+        threshold against the existing incident.
         """
 
         updated_incidents: list[Incident] = []
 
         for new_incident in new_incidents:
-            new_alert_ids = {
-                self._alert_identity(alert)
-                for alert in new_incident.alerts
-            }
+            matching_ids = self._find_matching_incidents(
+                new_incident
+            )
 
-            matching_incident_id: str | None = None
-
-            # Look for an existing incident sharing an alert.
-            for (
-                incident_id,
-                existing_incident,
-            ) in self.incidents.items():
-
-                existing_alert_ids = {
-                    self._alert_identity(alert)
-                    for alert in existing_incident.alerts
-                }
-
-                if new_alert_ids & existing_alert_ids:
-                    matching_incident_id = incident_id
-                    break
-
-            if matching_incident_id is None:
-                # New incident.
+            if not matching_ids:
+                # Completely new incident.
                 incident_id = self._incident_identity(
                     new_incident.alerts
                 )
@@ -182,33 +200,53 @@ class AlertStreamListener:
 
                 continue
 
-            # Existing incident: add any new alerts.
-            existing_incident = self.incidents[
-                matching_incident_id
+            # Use the first matching incident as the primary
+            # incident to preserve its stable ID.
+            primary_id = matching_ids[0]
+
+            primary_incident = self.incidents[
+                primary_id
             ]
 
             existing_alert_ids = {
                 self._alert_identity(alert)
-                for alert in existing_incident.alerts
+                for alert in primary_incident.alerts
             }
 
+            # Add genuinely new alerts.
             for alert in new_incident.alerts:
                 alert_id = self._alert_identity(alert)
 
                 if alert_id not in existing_alert_ids:
-                    existing_incident.alerts.append(alert)
+                    primary_incident.alerts.append(alert)
 
-            # Keep alerts chronologically ordered.
-            existing_incident.alerts.sort(
+            # If the new incident bridges two previously separate
+            # incidents, merge those incidents as well.
+            for other_id in matching_ids[1:]:
+                other_incident = self.incidents.pop(
+                    other_id
+                )
+
+                for alert in other_incident.alerts:
+                    alert_id = self._alert_identity(alert)
+
+                    if alert_id not in existing_alert_ids:
+                        primary_incident.alerts.append(
+                            alert
+                        )
+                        existing_alert_ids.add(
+                            alert_id
+                        )
+
+            primary_incident.alerts.sort(
                 key=lambda alert: alert.timestamp
             )
 
-            # Re-run correlation/risk/evidence/ATT&CK using
-            # the complete merged alert set.
+            # Recalculate all incident-level fields.
             refreshed = process_alerts(
                 [
                     alert.model_dump_json()
-                    for alert in existing_incident.alerts
+                    for alert in primary_incident.alerts
                 ],
                 generate_llm_narrative=False,
             )
@@ -218,15 +256,15 @@ class AlertStreamListener:
 
                 # Preserve the stable incident ID.
                 refreshed_incident.incident_id = (
-                    matching_incident_id
+                    primary_id
                 )
 
                 # Preserve an existing LLM narrative.
                 refreshed_incident.narrative = (
-                    existing_incident.narrative
+                    primary_incident.narrative
                 )
 
-                self.incidents[matching_incident_id] = (
+                self.incidents[primary_id] = (
                     refreshed_incident
                 )
 
@@ -240,11 +278,7 @@ class AlertStreamListener:
         self,
         count: int = 100,
     ) -> list[Incident]:
-        """
-        Process one batch of Redis alerts.
-
-        Normal live processing does NOT require the LLM.
-        """
+        """Process one batch of Redis alerts."""
 
         raw_alerts = self.read_alerts(
             count=count
@@ -262,14 +296,11 @@ class AlertStreamListener:
             new_alerts
         )
 
-        # Determine the newest alert timestamp.
         latest_timestamp = max(
             alert.timestamp
             for alert in self.recent_alerts
         )
 
-        # Keep only alerts inside the rolling
-        # correlation window.
         self.recent_alerts = [
             alert
             for alert in self.recent_alerts
@@ -279,7 +310,6 @@ class AlertStreamListener:
             )
         ]
 
-        # Run the core pipeline without the LLM.
         new_incidents = process_alerts(
             [
                 alert.model_dump_json()
@@ -288,8 +318,6 @@ class AlertStreamListener:
             generate_llm_narrative=False,
         )
 
-        # Merge newly discovered incidents into
-        # the persistent incident state.
         return self._merge_incidents(
             new_incidents
         )
