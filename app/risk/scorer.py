@@ -5,11 +5,11 @@ from app.schemas.alert import Alert
 
 class RiskScorer:
     """
-    Calculates an overall risk score for a correlated incident.
+    Calculates an incident-level risk score.
 
     Detector confidence remains the confidence produced by each
-    individual detector. This class only aggregates those alerts
-    into an incident-level risk score.
+    individual detector. Risk is a separate incident-level measure
+    that combines average detector confidence with detector diversity.
     """
 
     def __init__(
@@ -17,40 +17,55 @@ class RiskScorer:
         confidence_weight: float = 0.6,
         diversity_weight: float = 0.4,
     ) -> None:
+        if confidence_weight < 0 or diversity_weight < 0:
+            raise ValueError("Risk weights must be non-negative.")
+
+        if confidence_weight + diversity_weight <= 0:
+            raise ValueError("At least one risk weight must be positive.")
+
         self.confidence_weight = confidence_weight
         self.diversity_weight = diversity_weight
 
     def calculate_risk(self, alerts: list[Alert]) -> float:
         """
-        Calculate incident-level risk from all correlated alerts.
+        Calculate incident-level risk from correlated alerts.
+
+        Risk combines:
+        - average detector confidence
+        - diversity of distinct detector/threat types
+
+        The final score is bounded to [0, 1].
         """
 
         if not alerts:
             return 0.0
 
-        # Aggregate confidence across all alerts.
-        #
-        # We use the average confidence so that every alert
-        # contributes to the incident score.
         average_confidence = sum(
-            alert.confidence for alert in alerts
+            max(0.0, min(alert.confidence, 1.0))
+            for alert in alerts
         ) / len(alerts)
 
-        # Count distinct detector/threat types.
         threat_types = {
-            alert.threat_class for alert in alerts
+            alert.threat_class
+            for alert in alerts
         }
 
-        # Three or more distinct threat types represents
-        # maximum detector diversity for this scoring model.
         diversity_score = min(
             len(threat_types) / 3.0,
             1.0,
         )
 
+        weight_total = (
+            self.confidence_weight
+            + self.diversity_weight
+        )
+
         risk = (
             self.confidence_weight * average_confidence
             + self.diversity_weight * diversity_score
-        )
+        ) / weight_total
 
-        return round(min(risk, 1.0), 4)
+        return round(
+            max(0.0, min(risk, 1.0)),
+            4,
+        )

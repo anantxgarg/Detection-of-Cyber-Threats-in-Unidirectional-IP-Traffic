@@ -6,19 +6,13 @@ from src.detection.schemas import ThreatClass
 
 
 class Alert(BaseModel):
-    """
-    Alert consumed by the correlation and risk engine.
-
-    This mirrors the team's DetectionResult schema so that
-    detector output can be passed into the correlation layer.
-    """
-
     model_config = ConfigDict(extra="allow")
 
     timestamp: float
     flow_id: Optional[str] = None
     src_ip: str
     dst_ip: Optional[str] = None
+    protocol: Optional[str] = None
     threat_class: ThreatClass
     confidence: float
     evidence: dict[str, Any]

@@ -13,11 +13,11 @@ class ThreatClass(str, Enum):
 
 class DetectionResult(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    
     timestamp: float
-    flow_id: Optional[str] = None  # Original flow uid if derived from a single flow, else None
+    flow_id: Optional[str] = None
     src_ip: str
-    dst_ip: Optional[str] = None  # None if it's a fan-out anomaly targeting many IPs
+    dst_ip: Optional[str] = None
+    protocol: Optional[str] = None
     threat_class: ThreatClass
-    confidence: float  # 0.0 to 1.0
+    confidence: float
     evidence: Dict[str, Any]

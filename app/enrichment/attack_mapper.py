@@ -44,13 +44,29 @@ ATTACK_MAPPING: dict[str, list[dict[str, str]]] = {
 }
 
 
+def _has_supporting_evidence(alert: Alert) -> bool:
+    """
+    Determine whether an alert contains detector evidence
+    sufficient to support an ATT&CK mapping.
+
+    Empty evidence is treated as insufficient support.
+    """
+
+    return bool(alert.evidence)
+
+
 def map_alert_to_attack(alert: Alert) -> list[dict[str, str]]:
     """
-    Map one detector alert to ATT&CK techniques.
+    Map one detector alert to ATT&CK techniques only when
+    supporting detector evidence is present.
 
-    Returns an empty list when no deterministic mapping is
-    currently defined.
+    Returns an empty list when:
+    - no mapping is defined, or
+    - the alert does not contain supporting evidence.
     """
+
+    if not _has_supporting_evidence(alert):
+        return []
 
     return ATTACK_MAPPING.get(
         alert.threat_class.value,

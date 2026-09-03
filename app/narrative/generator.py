@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import os
 
 from ollama import chat
@@ -11,106 +9,80 @@ DEFAULT_MODEL = "qwen3:1.7b"
 
 
 def build_incident_prompt(incident: Incident) -> str:
-    evidence_text = []
+    """
+    Build a grounded prompt from structured incident data.
 
-    for name, evidence in incident.evidence.items():
-        evidence_text.append(
-            f"{name}: {evidence}"
-        )
+    The LLM is only responsible for generating a human-readable
+    narrative. It must not change detection results, confidence,
+    risk, or ATT&CK mappings.
+    """
 
-    attack_text = []
+    evidence_lines = []
 
-    for technique in incident.attack_techniques:
-        attack_text.append(
-            f"{technique['technique_id']} - "
-            f"{technique['technique_name']}"
-        )
-
-    # ---------------------------------------------------------
-    # Build incident-level correlation facts.
-    #
-    # IMPORTANT:
-    # A field is "shared" only when EVERY alert contains
-    # that field and all alerts have the same value.
-    # ---------------------------------------------------------
+    for key, value in incident.evidence.items():
+        evidence_lines.append(f"{key}: {value}")
 
     correlation_facts = []
 
-    alerts = incident.alerts
+    # Shared source
+    source_ips = {
+        alert.src_ip
+        for alert in incident.alerts
+        if alert.src_ip
+    }
 
-    if alerts:
+    if len(source_ips) == 1:
+        correlation_facts.append(
+            f"Shared source IP: {next(iter(source_ips))}"
+        )
 
-        # Shared source IP
-        source_ips = [
-            alert.src_ip
-            for alert in alerts
-            if alert.src_ip is not None
-        ]
+    # Shared destination
+    destination_ips = {
+        alert.dst_ip
+        for alert in incident.alerts
+        if alert.dst_ip
+    }
 
-        if (
-            len(source_ips) == len(alerts)
-            and len(set(source_ips)) == 1
-        ):
-            correlation_facts.append(
-                f"Shared source IP: {source_ips[0]}"
-            )
+    if len(destination_ips) == 1:
+        correlation_facts.append(
+            f"Shared destination IP: {next(iter(destination_ips))}"
+        )
 
-        # Shared destination IP
-        destination_ips = [
-            alert.dst_ip
-            for alert in alerts
-        ]
+    # Shared flow
+    flow_ids = {
+        alert.flow_id
+        for alert in incident.alerts
+        if alert.flow_id
+    }
 
-        if (
-            len(destination_ips) == len(alerts)
-            and all(
-                destination_ip is not None
-                for destination_ip in destination_ips
-            )
-            and len(set(destination_ips)) == 1
-        ):
-            correlation_facts.append(
-                f"Shared destination IP: "
-                f"{destination_ips[0]}"
-            )
+    if len(flow_ids) == 1:
+        correlation_facts.append(
+            f"Shared flow ID: {next(iter(flow_ids))}"
+        )
 
-        # Shared flow ID
-        flow_ids = [
-            alert.flow_id
-            for alert in alerts
-        ]
+    # Incident time span
+    timestamps = [
+        alert.timestamp
+        for alert in incident.alerts
+        if alert.timestamp is not None
+    ]
 
-        if (
-            len(flow_ids) == len(alerts)
-            and all(
-                flow_id is not None
-                for flow_id in flow_ids
-            )
-            and len(set(flow_ids)) == 1
-        ):
-            correlation_facts.append(
-                f"Shared flow ID: {flow_ids[0]}"
-            )
-
-        # Incident time span
-        timestamps = [
-            alert.timestamp
-            for alert in alerts
-        ]
-
-        if len(timestamps) > 1:
-            time_span = max(timestamps) - min(timestamps)
-
-            correlation_facts.append(
-                f"Incident alert time span: "
-                f"{round(time_span, 2)} seconds"
-            )
+    if len(timestamps) >= 2:
+        correlation_facts.append(
+            f"Incident alert time span: "
+            f"{max(timestamps) - min(timestamps):.1f} seconds"
+        )
 
     if not correlation_facts:
         correlation_facts.append(
-            "No explicit incident-level correlation "
-            "relationship is available."
+            "No explicit shared relationships supplied."
         )
+
+    attack_techniques = [
+        f"{technique['technique_id']} - "
+        f"{technique['technique_name']}"
+        for technique in incident.attack_techniques
+    ]
 
     prompt = f"""
 You are a cybersecurity incident reporting assistant.
@@ -130,10 +102,10 @@ Threat Types:
 {incident.threat_types}
 
 ATT&CK Techniques:
-{attack_text}
+{attack_techniques}
 
 Evidence:
-{evidence_text}
+{evidence_lines}
 
 INCIDENT-LEVEL CORRELATION FACTS:
 
@@ -150,26 +122,6 @@ the field is shared across the incident.
 A field may be described as "shared" ONLY when it
 appears in the INCIDENT-LEVEL CORRELATION FACTS.
 
-For example:
-
-Alert 1:
-destination IP = None
-
-Alert 2:
-destination IP = 66.94.238.147
-
-This is NOT a shared destination IP.
-
-Likewise:
-
-Alert 1:
-flow ID = None
-
-Alert 2:
-flow ID = ABC
-
-This is NOT a shared flow.
-
 Never infer a shared relationship from the Evidence
 section yourself.
 
@@ -185,96 +137,50 @@ OUTPUT FORMAT
 
 ## THREATS DETECTED
 
-Create ONE table containing the detected threats.
-
 | Threat Type | Confidence | Source IP | Destination IP |
 |---|---:|---|---|
 
 Include only values actually present.
-
 Use "-" when unavailable.
 
 ## DETECTION FEATURES
-
-Create ONE table:
 
 | Threat Type | Feature | Value |
 |---|---|---|
 
 List actual evidence fields and values.
-
 Do not combine evidence from different alerts.
 
 ## CORRELATION
 
-Create a small table:
-
 | Feature | Value |
 |---|---|
 
-Use ONLY the INCIDENT-LEVEL CORRELATION FACTS.
-
-Do NOT derive correlation relationships yourself.
-
-Do NOT call a destination IP shared unless it
-appears in the correlation facts.
-
-Do NOT call a flow ID shared unless it appears
-in the correlation facts.
-
-If no relationship is provided, state that no
-explicit relationship is available.
+Include ONLY relationships explicitly present
+in INCIDENT-LEVEL CORRELATION FACTS.
 
 ## ATT&CK MAPPING
-
-Create ONE table:
 
 | Technique ID | Technique Name | Description |
 |---|---|---|
 
 Use ONLY the supplied ATT&CK techniques.
-
-Do not create additional techniques.
-
-Do not claim that a technique proves malicious
-intent or compromise.
-
-The description must only explain the supplied
-mapping.
+Do not create new techniques.
 
 ## ANALYST ATTENTION
 
-No more than TWO short bullet points.
+Provide 1-3 concise bullet points.
 
-Only recommend actions directly supported by the
-supplied evidence.
-
-STRICT RULES
-
-- Markdown tables
-- no long paragraphs
-- no repeated "parameter"
-- use only supplied information
-- no invented facts
-- no invented intent
-- no invented attack stages
-- do not assume destination IP is C2
-- do not call an IP malicious unless explicitly stated
-- do not infer malware
-- do not infer compromise
-- do not infer vulnerabilities
-- do not infer APT activity
-- do not infer exfiltration
-- preserve evidence terminology exactly
-- do not reinterpret "cov"
-- do not change risk
-- do not change confidence
-- do not create new ATT&CK techniques
-- do not add unsupported relationships
-- do not treat per-alert fields as incident-level facts
-- only use shared relationships explicitly supplied
-- use "-" when unavailable
-- remain concise
+Do not claim confirmed compromise.
+Do not claim malicious intent unless explicitly supplied.
+Do not change confidence.
+Do not change risk.
+Do not create new ATT&CK techniques.
+Do not add unsupported relationships.
+Do not treat per-alert fields as incident-level facts.
+Only use shared relationships explicitly supplied.
+Use "-" when unavailable.
+Remain concise.
 """
 
     return prompt.strip()
@@ -284,9 +190,9 @@ def generate_narrative(incident: Incident) -> str:
     """
     Generate an optional LLM narrative.
 
-    The LLM is an enrichment layer only.
-    It does not determine threat class, confidence,
-    or risk.
+    The LLM is strictly an enrichment layer.
+    It must never block or affect the core
+    detection/correlation/risk pipeline.
     """
 
     model = os.getenv(
@@ -320,13 +226,17 @@ def generate_narrative(incident: Incident) -> str:
                     "content": build_incident_prompt(incident),
                 },
             ],
+            think=False,
+            options={
+                "num_predict": 300,
+            },
         )
 
         return response.message.content
 
-    except Exception as exc:
-        # The LLM must never break the detection pipeline.
-        return (
-            "LLM narrative unavailable. "
-            f"Reason: {type(exc).__name__}"
-        )
+    except Exception:
+        # LLM is optional enrichment.
+        # Never allow an LLM failure to affect
+        # detection, correlation, risk, evidence,
+        # or ATT&CK mapping.
+        return ""
