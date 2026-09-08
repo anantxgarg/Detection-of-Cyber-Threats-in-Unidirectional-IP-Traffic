@@ -64,9 +64,53 @@ To test the system against a sample packet capture (e.g., the provided CTU-13 da
 3. **Observe the Output:**
    Switch to Terminal 2 (Detection Engine). As Zeek generates the logs, the tailer will stream them, and you should see the detection engine outputting baseline updates and triggering alerts (e.g., `🔥 ALERT [C2 Beaconing] Confidence:...`).
 
-## Running Unit Tests
-To run the automated test suite:
+## Running Tests Through the CTU-13 Dataset
+
+You can run tests through the **CTU-13 Botnet dataset** (Neris botnet scenario, infected host `147.32.84.165`) in three convenient ways:
+
+### 1. Automated Integration Tests (`pytest`)
+Run the comprehensive CTU-13 automated test suite:
 ```bash
-source .venv/bin/activate
-PYTHONPATH=. pytest tests/
+# Windows PowerShell
+& ".\.venv\Scripts\python.exe" -m pytest tests/test_ctu13.py -v
+
+# Linux / macOS
+pytest tests/test_ctu13.py -v
 ```
+To run the complete test suite (all 72 unit and integration tests):
+```bash
+pytest tests/
+```
+
+### 2. Standalone Presentation Demo Runner
+For live presentations, demonstrations, or evaluation benchmarks, run the presentation script:
+```bash
+# Quick demo run (processes 2,000 CTU-13 events)
+python scripts/run_ctu13_tests.py --max-events 2000
+
+# Full presentation run streaming to live Redis / Web UI
+python scripts/run_ctu13_tests.py --max-events 5000 --stream
+```
+This prints an executive incident report featuring:
+- Ingestion metrics & schema normalization
+- Threat detection counts (C2 Beaconing, DGA, DNS Tunnelling, Recon)
+- Graph correlation into security incidents
+- Multi-stage risk scores (escalated for multi-vector botnet attacks)
+- MITRE ATT&CK technique mapping (T1071, T1568.002, T1046, T1071.004)
+- Explainable AI (SHAP feature contributions)
+
+### 3. Live Presentation with Web Dashboard
+To demonstrate the full visual SOC dashboard during a presentation:
+1. Ensure Redis is running: `docker compose up -d redis`
+2. Start the API server:
+   ```bash
+   python -m app.runner
+   ```
+3. Open your browser to `http://localhost:8081` and log in with:
+   - **Username:** `admin`
+   - **Password:** `admin123`
+4. In another terminal, stream the CTU-13 dataset:
+   ```bash
+   python scripts/run_ctu13_tests.py --max-events 3000 --stream
+   ```
+   Watch the live incidents, attack chains, risk meters, and MITRE matrix populate in real time!

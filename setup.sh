@@ -11,7 +11,7 @@ echo "Upgrading pip..."
 pip install --upgrade pip
 
 echo "Installing requirements..."
-pip install pydantic redis tailer pytest scikit-learn xgboost scipy
+pip install pydantic redis tailer pytest scikit-learn xgboost scipy fastapi "uvicorn[standard]" websockets
 
 echo "Setup complete. To activate the virtual environment, run:"
 echo "source .venv/bin/activate"
