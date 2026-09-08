@@ -266,6 +266,7 @@ def test_alert_with_same_identity_is_not_added_twice():
         confidence=0.7,
     )
 
+    # First occurrence creates the incident.
     first_results = listener._merge_incidents(
         process_alerts(
             [alert.model_dump_json()]
@@ -276,22 +277,21 @@ def test_alert_with_same_identity_is_not_added_twice():
 
     first_id = first_results[0].incident_id
 
+    # The exact same alert must not generate another
+    # incident update.
     second_results = listener._merge_incidents(
         process_alerts(
             [alert.model_dump_json()]
         )
     )
 
-    assert len(second_results) == 1
+    assert len(second_results) == 0
 
-    second_incident = second_results[0]
-
-    # Duplicate alert must not create a new incident.
-    assert second_incident.incident_id == first_id
-
+    # The original incident must still exist.
     incidents = listener.get_incidents()
 
     assert len(incidents) == 1
+    assert incidents[0].incident_id == first_id
     assert len(incidents[0].alerts) == 1
 
 

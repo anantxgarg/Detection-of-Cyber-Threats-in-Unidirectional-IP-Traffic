@@ -51,12 +51,14 @@ class AlertStreamListener:
             generate_llm_narrative
         )
 
+        # Alerts kept inside the active correlation window.
         self.recent_alerts: list[Alert] = []
 
+        # Stable incident store.
         self.incidents: dict[str, Incident] = {}
 
     def read_alerts(self, count: int = 100) -> list[str]:
-        """Read alerts from the Redis alerts stream."""
+        """Read new alerts from the Redis alerts stream."""
 
         response = self.redis.xread(
             {self.stream_name: self.last_id},
@@ -71,6 +73,7 @@ class AlertStreamListener:
 
         for _, messages in response:
             for message_id, fields in messages:
+                # Advance Redis stream cursor.
                 self.last_id = message_id
 
                 raw_alert = fields.get("alert")
@@ -82,7 +85,12 @@ class AlertStreamListener:
 
     @staticmethod
     def _alert_identity(alert: Alert) -> str:
-        """Create a deterministic identity for an alert."""
+        """
+        Create a deterministic identity for an alert.
+
+        The identity allows duplicate alerts to be detected even
+        when Redis delivers the same logical alert again.
+        """
 
         identity = (
             f"{alert.timestamp}|"
@@ -119,11 +127,11 @@ class AlertStreamListener:
         incident: Incident,
     ) -> bool:
         """
-        Determine whether a new alert is sufficiently correlated
+        Determine whether an alert is sufficiently correlated
         with an existing incident.
 
-        Uses the same temporal window, correlation features, and
-        weighted edge calculation as the correlation engine.
+        Uses the same temporal window, correlation features,
+        and weighted edge calculation as the correlation engine.
         """
 
         for existing_alert in incident.alerts:
@@ -174,20 +182,25 @@ class AlertStreamListener:
         """
         Merge newly correlated incidents into stable incident state.
 
-        A new incident can extend an existing incident even when its
-        alerts are new, provided those alerts satisfy the correlation
-        threshold against the existing incident.
+        Returns only incidents that are:
+        - newly created,
+        - extended with a genuinely new alert, or
+        - changed because multiple incidents were merged.
         """
 
         updated_incidents: list[Incident] = []
 
         for new_incident in new_incidents:
+
             matching_ids = self._find_matching_incidents(
                 new_incident
             )
 
+            # -------------------------------------------------------
+            # CASE 1:
+            # Completely new incident.
+            # -------------------------------------------------------
             if not matching_ids:
-                # Completely new incident.
                 incident_id = self._incident_identity(
                     new_incident.alerts
                 )
@@ -200,8 +213,12 @@ class AlertStreamListener:
 
                 continue
 
-            # Use the first matching incident as the primary
-            # incident to preserve its stable ID.
+            # -------------------------------------------------------
+            # CASE 2:
+            # Existing incident found.
+            #
+            # Preserve the existing incident ID.
+            # -------------------------------------------------------
             primary_id = matching_ids[0]
 
             primary_incident = self.incidents[
@@ -213,19 +230,45 @@ class AlertStreamListener:
                 for alert in primary_incident.alerts
             }
 
-            # Add genuinely new alerts.
+            # Track whether anything actually changed.
+            added_new_alert = False
+
+            # -------------------------------------------------------
+            # Add only genuinely new alerts.
+            # -------------------------------------------------------
             for alert in new_incident.alerts:
                 alert_id = self._alert_identity(alert)
 
                 if alert_id not in existing_alert_ids:
                     primary_incident.alerts.append(alert)
+                    existing_alert_ids.add(alert_id)
+                    added_new_alert = True
 
-            # If the new incident bridges two previously separate
-            # incidents, merge those incidents as well.
+            # -------------------------------------------------------
+            # CASE 3:
+            # Exact same incident was reconstructed.
+            #
+            # Nothing changed, so do not broadcast it again.
+            # -------------------------------------------------------
+            if (
+                not added_new_alert
+                and len(matching_ids) == 1
+            ):
+                continue
+
+            # -------------------------------------------------------
+            # CASE 4:
+            # New incident bridges two or more existing incidents.
+            # Merge them into the primary incident.
+            # -------------------------------------------------------
+            merged_other_incident = False
+
             for other_id in matching_ids[1:]:
                 other_incident = self.incidents.pop(
                     other_id
                 )
+
+                merged_other_incident = True
 
                 for alert in other_incident.alerts:
                     alert_id = self._alert_identity(alert)
@@ -234,15 +277,22 @@ class AlertStreamListener:
                         primary_incident.alerts.append(
                             alert
                         )
+
                         existing_alert_ids.add(
                             alert_id
                         )
 
+            # -------------------------------------------------------
+            # Sort alerts chronologically.
+            # -------------------------------------------------------
             primary_incident.alerts.sort(
                 key=lambda alert: alert.timestamp
             )
 
-            # Recalculate all incident-level fields.
+            # -------------------------------------------------------
+            # Recalculate incident-level risk, evidence,
+            # ATT&CK mappings, threat types, etc.
+            # -------------------------------------------------------
             refreshed = process_alerts(
                 [
                     alert.model_dump_json()
@@ -254,7 +304,7 @@ class AlertStreamListener:
             if refreshed:
                 refreshed_incident = refreshed[0]
 
-                # Preserve the stable incident ID.
+                # Preserve stable incident ID.
                 refreshed_incident.incident_id = (
                     primary_id
                 )
@@ -268,9 +318,14 @@ class AlertStreamListener:
                     refreshed_incident
                 )
 
-                updated_incidents.append(
-                    refreshed_incident
-                )
+                # Broadcast because something actually changed.
+                if (
+                    added_new_alert
+                    or merged_other_incident
+                ):
+                    updated_incidents.append(
+                        refreshed_incident
+                    )
 
         return updated_incidents
 
@@ -278,7 +333,12 @@ class AlertStreamListener:
         self,
         count: int = 100,
     ) -> list[Incident]:
-        """Process one batch of Redis alerts."""
+        """
+        Process one batch of newly received Redis alerts.
+
+        New alerts are added to the active temporal window.
+        Only the active window is used for correlation.
+        """
 
         raw_alerts = self.read_alerts(
             count=count
@@ -287,15 +347,21 @@ class AlertStreamListener:
         if not raw_alerts:
             return []
 
+        # Parse only alerts that were actually received
+        # from Redis during this batch.
         new_alerts = [
             parse_alert(raw_alert)
             for raw_alert in raw_alerts
         ]
 
+        # Add them to the active correlation window.
         self.recent_alerts.extend(
             new_alerts
         )
 
+        # -----------------------------------------------------------
+        # Remove alerts older than the correlation window.
+        # -----------------------------------------------------------
         latest_timestamp = max(
             alert.timestamp
             for alert in self.recent_alerts
@@ -310,6 +376,10 @@ class AlertStreamListener:
             )
         ]
 
+        # -----------------------------------------------------------
+        # Build correlation incidents from the current active
+        # temporal window.
+        # -----------------------------------------------------------
         new_incidents = process_alerts(
             [
                 alert.model_dump_json()
@@ -318,6 +388,7 @@ class AlertStreamListener:
             generate_llm_narrative=False,
         )
 
+        # Merge those results into stable incident state.
         return self._merge_incidents(
             new_incidents
         )

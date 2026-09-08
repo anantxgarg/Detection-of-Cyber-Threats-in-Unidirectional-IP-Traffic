@@ -1,38 +1,13 @@
 from __future__ import annotations
 
-import time
-
-from app.redis_listener import AlertStreamListener
-
+import uvicorn
 
 def run() -> None:
     """
-    Continuously consume alerts from Redis and process them.
+    Start the FastAPI server which also runs the correlation engine in the background.
     """
-
-    listener = AlertStreamListener()
-
-    print("Correlation and risk engine started.")
-    print("Listening on Redis stream: alerts:live")
-
-    while True:
-        try:
-            incidents = listener.process_batch()
-
-            for incident in incidents:
-                print(
-                    f"Incident detected | "
-                    f"id={incident.incident_id} | "
-                    f"risk={incident.risk} | "
-                    f"alerts={len(incident.alerts)} | "
-                    f"threats={incident.threat_types}"
-                )
-
-        except Exception as exc:
-            print(f"Error while processing alerts: {exc}")
-
-            time.sleep(2)
-
+    print("Starting API and correlation risk engine...")
+    uvicorn.run("app.api:app", host="0.0.0.0", port=8081, reload=False)
 
 if __name__ == "__main__":
     run()

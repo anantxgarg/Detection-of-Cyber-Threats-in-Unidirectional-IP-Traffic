@@ -41,7 +41,7 @@ class DetectionEngine:
             "Listening to events:live..."
         )
 
-        last_id = "$"
+        last_id = "0-0"
 
         while True:
             try:
@@ -108,7 +108,7 @@ class DetectionEngine:
                                     )
 
                                     print(
-                                        f"🔥 ALERT "
+                                        f"ALERT "
                                         f"[{result.threat_class.value}] "
                                         f"Confidence: "
                                         f"{result.confidence} "
