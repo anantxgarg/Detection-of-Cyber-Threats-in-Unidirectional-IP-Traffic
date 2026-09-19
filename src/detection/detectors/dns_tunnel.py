@@ -1,23 +1,18 @@
 import math
-import joblib
 import redis
 import shap
+from pathlib import Path
 
 from src.detection.schemas import DetectionResult, ThreatClass
 from src.ingestion.schemas import NormalizedEvent
+from src.detection.model_loader import load_model
 
 
 class DNSTunnelDetector:
 
     def __init__(self, redis_client=None):
-        # Load friend's trained DNS tunnelling model
-        model_path = (
-            "tmp/dns_friend/"
-            "DNS_Detector/"
-            "dns_tunnel_model.pkl"
-        )
-
-        self.model = joblib.load(model_path)
+        # Load DNS tunnel detection model from canonical models directory
+        self.model = load_model("dns_tunnel_model.pkl", "dns_tunnel")
 
         # Redis is used for behavioral analysis
         self.r = redis_client

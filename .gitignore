@@ -223,5 +223,12 @@ __marimo__/
 *.txt
 logs/
 pcaps/
+
+# Process output logs
+*.out
+
 # Temporary detector integration files
 tmp/
+
+# Project documentation (internal notes and reports)
+project-docs/

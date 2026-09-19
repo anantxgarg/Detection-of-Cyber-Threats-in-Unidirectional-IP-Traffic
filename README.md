@@ -6,6 +6,18 @@ AI-Based Detection of Cyber Threats in Unidirectional IP Traffic
 - **Python 3.10+**
 - **Git**
 
+## Repository Structure
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/STRUCTURE.md`](docs/STRUCTURE.md) for detailed repository layout and component descriptions.
+
+Quick overview:
+- `src/`: Core detection pipeline (ingestion + detection engine)
+- `app/`: API server and correlation engine
+- `frontend/`: Web dashboard
+- `models/`: Trained ML models
+- `research/`: Training scripts and prototypes
+- `tests/`: Test suite
+
 ## Setup Instructions
 
 1. **Clone the repository:**
@@ -19,6 +31,13 @@ AI-Based Detection of Cyber Threats in Unidirectional IP Traffic
    ```bash
    chmod +x setup.sh
    ./setup.sh
+   ```
+   
+   Alternatively, use pip directly:
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
    ```
 
 3. **Start the Infrastructure (Redis & Zeek):**
@@ -114,3 +133,21 @@ To demonstrate the full visual SOC dashboard during a presentation:
    python scripts/run_ctu13_tests.py --max-events 3000 --stream
    ```
    Watch the live incidents, attack chains, risk meters, and MITRE matrix populate in real time!
+
+
+## Research and Model Training
+
+Model training scripts and standalone detector prototypes are in the `research/` directory.
+These are not required for running the detection system.
+
+See `research/README.md` for details on retraining models or analyzing detector logic.
+
+## Repository Structure
+
+- `src/`: Core detection pipeline (ingestion + detection engine)
+- `app/`: API server and correlation engine
+- `frontend/`: Web dashboard
+- `models/`: Trained ML models
+- `research/`: Training scripts and prototypes
+- `tests/`: Test suite (72 tests)
+- `docs/`: Documentation

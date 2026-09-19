@@ -2,26 +2,20 @@ from pathlib import Path
 from collections import Counter
 import math
 
-import joblib
 import pandas as pd
 import shap
 from scipy.sparse import hstack
 
 from src.detection.schemas import DetectionResult, ThreatClass
 from src.ingestion.schemas import NormalizedEvent
+from src.detection.model_loader import load_model
 
 
 class DGADetector:
     def __init__(self):
-        # Friend's trained DGA model files
-        project_root = Path(__file__).resolve().parents[3]
-        model_dir = project_root / "tmp" / "dga_friend" / "DGA_Detector"
-
-        self.model_path = model_dir / "combined_dga_model.pkl"
-        self.vectorizer_path = model_dir / "ngram_vectorizer.pkl"
-
-        self.model = joblib.load(self.model_path)
-        self.vectorizer = joblib.load(self.vectorizer_path)
+        # Load DGA detection models from canonical models directory
+        self.model = load_model("combined_dga_model.pkl", "dga")
+        self.vectorizer = load_model("ngram_vectorizer.pkl", "dga")
 
         self.feature_columns = [
             "domain_length",
